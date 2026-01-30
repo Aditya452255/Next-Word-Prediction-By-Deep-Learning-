@@ -2,42 +2,111 @@ import streamlit as st
 import pickle
 import numpy as np
 import os
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+import json
+
+try:
+    import tflite_runtime.interpreter as tflite
+except Exception:  # pragma: no cover - fallback when runtime isn't available
+    import tensorflow.lite as tflite
+
+DEFAULT_FILTERS = "!\"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n"
+
+
+class SimpleTokenizer:
+    def __init__(self, word_index, oov_token=None, filters=DEFAULT_FILTERS, lower=True, split=" "):
+        self.word_index = word_index
+        self.oov_token = oov_token
+        self.filters = filters
+        self.lower = lower
+        self.split = split
+
+    def texts_to_sequences(self, texts):
+        sequences = []
+        for text in texts:
+            if self.lower:
+                text = text.lower()
+            translate_table = str.maketrans({ch: self.split for ch in self.filters})
+            text = text.translate(translate_table)
+            tokens = [t for t in text.split(self.split) if t]
+            seq = []
+            for token in tokens:
+                idx = self.word_index.get(token)
+                if idx is None and self.oov_token:
+                    idx = self.word_index.get(self.oov_token)
+                if idx is not None:
+                    seq.append(idx)
+            sequences.append(seq)
+        return sequences
+
+
+def pad_sequence(sequence, maxlen):
+    if len(sequence) > maxlen:
+        sequence = sequence[-maxlen:]
+    return [0] * (maxlen - len(sequence)) + list(sequence)
+
 
 # ------------------------------
 # Load saved files
 # ------------------------------
 @st.cache_resource
 def load_resources():
-    model_path = "lstm_model.h5"
+    model_path = "model.tflite"
     if not os.path.exists(model_path):
-        alt_path = "lstm_model (1).h5"
-        if os.path.exists(alt_path):
-            model_path = alt_path
-        else:
+        raise FileNotFoundError(
+            "TFLite model not found. Please generate 'model.tflite' and place it in the app directory."
+        )
+
+    tokenizer_json = "tokenizer.json"
+    if os.path.exists(tokenizer_json):
+        with open(tokenizer_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        tokenizer = SimpleTokenizer(
+            word_index=data["word_index"],
+            oov_token=data.get("oov_token"),
+            filters=data.get("filters", DEFAULT_FILTERS),
+            lower=data.get("lower", True),
+            split=data.get("split", " "),
+        )
+    else:
+        try:
+            with open("tokenizer.pkl", "rb") as f:
+                tokenizer = pickle.load(f)
+        except Exception as exc:
             raise FileNotFoundError(
-                "Model file not found. Expected 'lstm_model.h5' (or 'lstm_model (1).h5') in the app directory."
-            )
-    model = load_model(model_path, compile=False)
-    with open("tokenizer.pkl", "rb") as f:
-        tokenizer = pickle.load(f)
+                "Tokenizer JSON not found and tokenizer.pkl could not be loaded. "
+                "Please export tokenizer.json and add it to the repo."
+            ) from exc
+
     with open("max_len.pkl", "rb") as f:
         max_len = pickle.load(f)
-    return model, tokenizer, max_len
 
-model, tokenizer, max_len = load_resources()
+    interpreter = tflite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    return interpreter, input_details, output_details, tokenizer, max_len
+
+
+interpreter, input_details, output_details, tokenizer, max_len = load_resources()
 
 # ------------------------------
 # Prediction function
 # ------------------------------
 def predict_next_word(text):
     sequence = tokenizer.texts_to_sequences([text])[0]
-    sequence = pad_sequences([sequence], maxlen=max_len-1, padding='pre')
+    padded = pad_sequence(sequence, max_len - 1)
 
-    preds = model.predict(sequence, verbose=0)
-    predicted_index = np.argmax(preds)
+    input_index = input_details[0]["index"]
+    input_dtype = input_details[0]["dtype"]
+    input_data = np.array([padded], dtype=input_dtype)
+
+    interpreter.set_tensor(input_index, input_data)
+    interpreter.invoke()
+
+    output_index = output_details[0]["index"]
+    preds = interpreter.get_tensor(output_index)
+    predicted_index = int(np.argmax(preds))
 
     for word, index in tokenizer.word_index.items():
         if index == predicted_index:
