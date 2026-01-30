@@ -2,6 +2,7 @@ import streamlit as st
 import pickle
 import numpy as np
 import os
+import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
@@ -19,7 +20,7 @@ def load_resources():
             raise FileNotFoundError(
                 "Model file not found. Expected 'lstm_model.h5' (or 'lstm_model (1).h5') in the app directory."
             )
-    model = load_model(model_path)
+    model = load_model(model_path, compile=False)
     with open("tokenizer.pkl", "rb") as f:
         tokenizer = pickle.load(f)
     with open("max_len.pkl", "rb") as f:
