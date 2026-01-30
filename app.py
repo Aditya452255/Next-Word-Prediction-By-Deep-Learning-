@@ -1,6 +1,7 @@
 import streamlit as st
 import pickle
 import numpy as np
+import os
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
@@ -9,7 +10,16 @@ from tensorflow.keras.preprocessing.sequence import pad_sequences
 # ------------------------------
 @st.cache_resource
 def load_resources():
-    model = load_model("lstm_model (1).h5")
+    model_path = "lstm_model.h5"
+    if not os.path.exists(model_path):
+        alt_path = "lstm_model (1).h5"
+        if os.path.exists(alt_path):
+            model_path = alt_path
+        else:
+            raise FileNotFoundError(
+                "Model file not found. Expected 'lstm_model.h5' (or 'lstm_model (1).h5') in the app directory."
+            )
+    model = load_model(model_path)
     with open("tokenizer.pkl", "rb") as f:
         tokenizer = pickle.load(f)
     with open("max_len.pkl", "rb") as f:
